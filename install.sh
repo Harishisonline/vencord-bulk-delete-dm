@@ -62,18 +62,22 @@ fi
 
 cd "$CLONE"
 
-# Prefer the exact commit your installed Vencord was built from, so the
-# rebuild differs only by this plugin. Read it from the installed bundle.
-TARGET_COMMIT=""
+# Prefer the exact Vencord version your installed build was made from, so the
+# rebuild differs only by this plugin. The standalone bundle embeds its
+# version as `Vencord:v1.15.16`.
+TARGET_VERSION=""
 if [ "$MODE" = "standalone" ] && [ -f "$DATA_DIR/dist/renderer.js" ]; then
-    TARGET_COMMIT="$(grep -o 'Vencord v[0-9.]*[^"]*"' "$DATA_DIR/dist/renderer.js" 2>/dev/null | head -1 | grep -oE '[0-9a-f]{7,40}' || true)"
+    TARGET_VERSION="$(grep -oE 'Vencord:`v[0-9]+\.[0-9]+\.[0-9]+' "$DATA_DIR/dist/renderer.js" 2>/dev/null | head -1 | sed 's/^Vencord:`//' || true)"
 fi
 
 git fetch --all --tags --quiet
 
-if [ -n "$TARGET_COMMIT" ] && git cat-file -e "$TARGET_COMMIT^{commit}" 2>/dev/null; then
-    echo "==> Using commit $TARGET_COMMIT"
-    git checkout --quiet "$TARGET_COMMIT"
+if [ -n "$TARGET_VERSION" ] && git rev-parse -q --verify "refs/tags/$TARGET_VERSION" >/dev/null; then
+    echo "==> Using Vencord $TARGET_VERSION (matches your installed build)"
+    git checkout --quiet "refs/tags/$TARGET_VERSION"
+elif [ -n "$TARGET_VERSION" ]; then
+    echo "==> Vencord $TARGET_VERSION not found as a tag, using latest instead"
+    git checkout --quiet origin/main
 else
     echo "==> Using latest Vencord ($(git rev-parse --short origin/main))"
     git checkout --quiet origin/main
