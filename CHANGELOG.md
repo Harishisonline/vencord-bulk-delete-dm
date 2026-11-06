@@ -8,6 +8,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Nothing yet.
 
+## [2.2.0] - 2026-11-07
+
+The long-run rate limit fix. This one only showed up on a run that went
+past 23 minutes, which is exactly why every earlier test missed it.
+
+### Fixed
+
+- **The scheduler walked itself into the rate limit after about 23 minutes.**
+  The scheduler had a rule to tighten the spacing by 100ms after every 40
+  clean requests, on the theory that an idle bucket refills faster.
+  Discord's refill rate is fixed and waiting earns no credit, so the run
+  was slowly walking back into the limit it had already learned.
+  - Each step down needed 40 clean requests, so 680 clean requests, which
+    is about 23 minutes at 0.5 deletions per second, before the first
+    symptom appeared.
+  - The spacing now only ever widens, and only when Discord says to. A
+    clean request changes nothing.
+  - Every throttle widens the spacing, not just the first one.
+- **Two workers were taking half the tokens from each other.** The delete
+  rate limit is one account-wide bucket, so a second worker does not add
+  throughput. Each worker reserved its own slot and they fired one spacing
+  apart, which is half the refill interval, so one of every pair was
+  refused. Measured gaps were 103ms and 1898ms alternating, and Discord
+  refused 38 of every 75 requests.
+  - The default worker count is now **1**.
+  - Slots reserved before a 429 arrived are given back, so the pause
+    applies to every worker.
+
+### Measured, before and after
+
+Same plugin, same DM, same message pool:
+
+| | Before | After |
+| --- | --- | --- |
+| Throttles in the first 2 minutes | 325 | **1** |
+| Speed | 0.2/s | **0.7/s** |
+| Requests refused | two thirds | one |
+| Throttle count after 11 minutes | climbing | still 1 |
+
 ## [2.1.0] - 2026-11-07
 
 The "Discord is not loading anything after I use delete all dm" bug, chased
@@ -277,7 +316,8 @@ First public release.
 - The `maxMessages` limit silently truncates the run.
 - Deleting 1,000 messages takes over 20 minutes.
 
-[Unreleased]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v2.1.0...v2.2.0
 [2.1.0]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Harishisonline/vencord-bulk-delete-dm/releases/tag/v1.0.0
