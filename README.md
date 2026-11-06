@@ -47,10 +47,33 @@ is wrong:
 
 Requirements: `git`, `node` (20 or newer), and `pnpm`. See
 [Vencord's install guide](https://docs.vencord.dev/installing) for how to get
-those.
+those. On macOS, `corepack enable` gives you `pnpm` if you do not have it.
 
 Restart Discord afterwards. The plugin appears under **Settings > Plugins >
-BulkDeleteDm**.
+BulkDeleteDm**, and it starts **enabled**.
+
+**After a Vencord update, re-run the script.** Vencord's auto-updater
+replaces `renderer.js` with the official build, which does not contain this
+plugin, so the plugin disappears until you install it again. The script
+prints this reminder every time it runs.
+
+### Using it
+
+1. Open the DM. You do not need to scroll to anything.
+2. Right-click **the DM in the sidebar** (or right-click one of your own
+   messages inside it).
+3. Pick **Delete All My Messages In This DM**.
+4. Confirm. A progress window opens showing the count, the speed, the
+   estimated time left, and how many times Discord throttled the request.
+   You can press **Cancel** at any point.
+
+To delete every message of yours in a DM with thousands of messages, set
+**Maximum messages per run** to `0` first, which means no limit.
+
+**Leave "Delete requests running at once" at 1.** Discord's delete rate
+limit is one bucket for your whole account, so a second worker does not
+make the run faster, it just splits the same tokens and gets half of its
+requests refused.
 
 ### Option 2: manual
 
