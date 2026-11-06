@@ -46,6 +46,7 @@ Same plugin, same DM, same message pool:
 | Speed | 0.2/s | **0.7/s** |
 | Requests refused | two thirds | one |
 | Throttle count after 11 minutes | climbing | still 1 |
+| Throttle count after 31 minutes | climbing | still 1 |
 
 ## [2.1.0] - 2026-11-07
 

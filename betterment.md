@@ -728,8 +728,22 @@ The same plugin, the same DM, the same message pool, after the fix:
 | Speed | 0.2/s | **0.7/s** |
 | Requests refused | two thirds | one |
 
-The run went from 416 deleted in 29 minutes to a steady 0.7/s with the
-throttle count barely moving.
+The run went from 416 deleted in 29 minutes to a steady 0.5 to 0.7/s with
+the throttle count barely moving.
+
+The clean run was measured again at 31 minutes in, with the request layer
+instrumented:
+
+```json
+{
+  "attempts": 37, "ok": 37, "r429": 0,
+  "gaps": [1989, 2000, 2002, 2004, 1995, 2008, 1995, 2997, 2000, 2015, ...]
+}
+```
+
+Thirty-seven attempts, thirty-seven successes, zero refusals, and the
+spacing locked at 2000ms. The old build was at 325 throttles by this
+point.
 
 ---
 
