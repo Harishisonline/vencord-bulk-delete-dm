@@ -678,6 +678,20 @@ mechanism available.
 burst of roughly 15 to 20 messages and then refills at about **one message
 every two seconds**. Measured sustained rate: **0.5 deletions per second**.
 
+The cleanest measurement is a 45 second live trace of the shipped plugin
+with nothing else touching the API:
+
+```json
+{
+  "delCount": 22, "delOk": 22, "del429": 0, "del404": 0,
+  "gapMin": 1922, "gapMedian": 2000, "gapMax": 2084
+}
+```
+
+Twenty-two deletes, twenty-two successes, no wasted requests, and the
+spacing held at 2000ms. That is the plugin running at the rate Discord
+allows, not the plugin running slowly.
+
 That puts a floor of about **104 minutes** on clearing 3,135 messages. No
 amount of tuning in this plugin gets below it, because the limit is on
 Discord's side.
@@ -716,13 +730,80 @@ whether a run is active.
 future version binary-search for older pages instead of walking every one.
 Not implemented.
 
+### 3. The rate limit bucket is per account, so two runs halve each other
+
+This one only showed up because the plugin was being measured at the same
+time as the measurement itself.
+
+### What was wrong
+
+Nothing was wrong with the plugin. The throttle counter in the progress
+window climbed from 8 to 161 over about eight minutes, and the speed readout
+fell from 0.5/s to 0.2/s. It looked like a scheduler bug.
+
+It was not. A live request trace captured the actual pattern:
+
+```
+"attempts": 57, "ok": 15, "r429": 27, "other": 15, "medianGap": 1067
+"429 0ms", "OK 215ms", "429 2031ms", "429 2215ms", "429 4047ms", "OK 4215ms"
+```
+
+Two requests 184ms apart, then a 2 second gap, then two more. That is two
+workers hitting a shared bucket at the same time.
+
+The cause was a separate benchmark script running at the same moment,
+issuing its own deletes against the same account. Discord's delete rate limit
+is scoped to the **user**, not to the channel, so the two runs were fighting
+over one bucket.
+
+### What the clean run looks like
+
+With nothing else touching the API, the same plugin produced:
+
+| | Throttles | Gap between requests |
+| --- | --- | --- |
+| While a benchmark was competing | 164 | 184ms, in pairs |
+| On its own | **0** | **2000ms, dead even** |
+
+The 45 second trace of the clean run:
+
+```json
+{
+  "delCount": 22, "delOk": 22, "del429": 0, "del404": 0,
+  "gapMin": 1922, "gapMedian": 2000, "gapMax": 2084,
+  "maxInFlight": 2
+}
+```
+
+Not one wasted request across 22 deletes, and the spacing held at 2000ms
+with a spread of only 162ms from fastest to slowest.
+
+### The lesson
+
+The scheduler was right the whole time. A throttle storm during a run is
+not necessarily the plugin's fault, and the first instinct, "tighten the
+scheduler", would have made the real problem worse by slowing down a run
+that was already fine.
+
+**Do not run two deletions at once, and do not benchmark while clearing.**
+The bucket is per account. This is worth telling users, because running the
+plugin in two DMs at the same time is the obvious thing to try when you have
+a lot to clear, and it makes both runs slower.
+
+---
+
 ### 3. The rate limit bucket is per account, not per channel
 
 The request log shows Discord tracking a rate limit entry per message URL,
 and the 429 responses carry `x-ratelimit-scope: user`. This means running
 the plugin in one DM can throttle deletes in another. The scheduler adapts
 to this automatically, but it means running two big deletions at once will
-slow both down. Worth documenting for users.
+slow both down.
+
+This was measured directly during the AEGIS run. See "The rate limit bucket
+is per account, so two runs halve each other" above for the trace: two runs
+against one account produced 164 throttles and a 0.2/s rate, while the same
+plugin alone produced zero throttles at a dead-even 0.49/s.
 
 ### 4. The `maxMessages` limit stops the walk, it does not skip ahead
 

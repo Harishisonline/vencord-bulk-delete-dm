@@ -50,6 +50,28 @@ guessing.
   properly, the toast shows the deleted count, skipped count, failure
   count, throttle count, elapsed time and the measured rate.
 
+### Measured, for reference
+
+A 45 second live trace of the shipped plugin with nothing else touching the
+API, with the request layer instrumented to record every status and the gap
+between requests:
+
+```json
+{
+  "delCount": 22, "delOk": 22, "del429": 0, "del404": 0,
+  "gapMin": 1922, "gapMedian": 2000, "gapMax": 2084,
+  "maxInFlight": 2
+}
+```
+
+Twenty-two deletes, twenty-two successes, zero wasted requests, and the
+spacing held at 2000ms with a spread of 162ms from fastest to slowest.
+
+Discord's delete rate limit is scoped to the **user**, not the channel, so
+running two deletions at once halves both. The same plugin measured 164
+throttles and 0.2/s while a second script was competing for the same
+bucket. Do not run two deletions at once.
+
 ### Verified
 
 Run against the live client with a full CDP exception listener attached,

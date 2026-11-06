@@ -105,6 +105,12 @@ small, roughly 15 to 20 messages, and it does not change the total.
   ends up **slower**, not faster. Measured: 8 parallel requests produced a
   `429` for nearly every one of them and finished slower than a single
   sequential worker.
+- **Do not run two deletions at the same time.** Discord's delete rate limit
+  is scoped to your user account, not to the channel, so clearing two DMs
+  at once slows both of them down. Measured on a clean run: the plugin
+  alone made 22 deletes in 45 seconds with zero throttles, at a dead even
+  2000ms between requests. The same plugin running alongside a second script
+  against the same account dropped to 0.2/s with 164 throttles.
 - Messages older than 14 days can only be bulk deleted in **guild** channels.
   That rule does not apply here, because the plugin deletes messages
   individually, and it does work on old DM messages.
