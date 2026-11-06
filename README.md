@@ -86,15 +86,46 @@ deletes the newest 200 and tells you it stopped at the limit. Raise
 - Some Discord system messages cannot be deleted by anyone, even their author.
   Call and thread-system messages are examples. The plugin skips these and
   reports them as `skipped`, not as a failure.
+- The message list endpoint returns at most 100 messages per request, so
+  reading a long DM takes several requests. The plugin pages backwards
+  automatically, so this only affects speed, not results. Discord does not
+  document a hard cap on how far back a DM's history goes, and in testing a
+  DM with over 12,000 messages still paged all the way back.
 
-**Deleted messages can linger in the chat view.** If you use
-[MessageLogger](https://github.com/Vendicated/Vencord/tree/main/src/plugins/messageLogger),
-it keeps deleted messages in the local store and paints them red instead of
-removing them. That is what MessageLogger does by design, and it is why a
-message can look "still there" after it was deleted. The plugin's
-`removeFromView` setting makes it remove the message outright instead. If the
-chat still looks stale after a run, reload the Discord window
-(`Cmd+R` / `Ctrl+R`) to re-fetch from the server.
+**How far back a run reaches.** The plugin reads the DM newest-first and
+collects your messages until it has `maxMessages` of them, so one run always
+covers the **newest** messages in the DM. If a DM has more of your messages
+than the limit, run it again after raising `maxMessages` to reach further
+back.
+
+**Deleted messages can linger in the chat view.** This is the single most
+common "it says it deleted them but I can still see them" report, and it is
+worth understanding what is actually happening.
+
+Discord's REST delete does not emit a gateway `MESSAGE_DELETE` back to your
+own client. When the plugin deletes a message through the API, Discord's
+server removes it, but your client keeps its own cached copy of that message
+and keeps rendering it. The message is gone from the server but still on your
+screen.
+
+On top of that, [MessageLogger](https://github.com/Vendicated/Vencord/tree/main/src/plugins/messageLogger)
+(which many people run) intercepts the local delete event and keeps the
+message in the store marked `deleted: true`, painting it **red** instead of
+removing it. That is exactly what MessageLogger is designed to do, and it is
+why you end up with a mix of red and white rows: red means "MessageLogger
+logged this deletion", white means "this row was never reconciled locally".
+
+The plugin handles both cases:
+
+- `removeFromView: true` (default) removes each deleted message from the
+  local store outright, then clears and refetches the channel so the view
+  matches the server exactly. No red rows, no stale rows.
+- `removeFromView: false` dispatches a plain delete event, which leaves
+  MessageLogger's red markers in place. Use this if you want MessageLogger's
+  deletion log.
+
+If the chat still looks stale after a run, reload the Discord window
+(`Cmd+R` / `Ctrl+R`) to force a refetch.
 
 **Counts.** The toast after a run reports exactly what happened: how many were
 deleted, how many were skipped as undeletable system messages, how many

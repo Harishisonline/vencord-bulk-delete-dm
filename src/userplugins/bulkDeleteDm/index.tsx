@@ -124,7 +124,12 @@ interface FetchResult {
     messages: DmMessage[];
     skipped: number;
     hitLimit: boolean;
+    /** True when we stopped paging because of the page cap, not because we ran out of history. */
+    truncated: boolean;
 }
+
+/** Discord returns at most 100 messages per request, so this covers 100k messages. */
+const MAX_PAGES = 1000;
 
 /**
  * Collect every message in the channel that was authored by the current user.
@@ -136,9 +141,9 @@ async function fetchOwnMessages(channelId: string, maxMessages: number): Promise
     let skipped = 0;
     let before: string | undefined;
     let hitLimit = false;
+    let truncated = false;
 
-    // Hard stop on page count so a huge channel cannot spin forever.
-    for (let page = 0; page < 200; page++) {
+    for (let page = 0; page < MAX_PAGES; page++) {
         const query: Record<string, any> = { limit: PAGE_SIZE };
         if (before) query.before = before;
 
@@ -166,16 +171,19 @@ async function fetchOwnMessages(channelId: string, maxMessages: number): Promise
             if (collected.length > maxMessages) {
                 hitLimit = true;
                 collected.pop();
-                return { messages: collected, skipped, hitLimit };
+                return { messages: collected, skipped, hitLimit, truncated };
             }
         }
 
         const oldest = messages[messages.length - 1];
         if (!oldest?.id) break;
         before = oldest.id;
+
+        // Ran out of pages without reaching the end of the channel.
+        if (page === MAX_PAGES - 1) truncated = true;
     }
 
-    return { messages: collected, skipped, hitLimit };
+    return { messages: collected, skipped, hitLimit, truncated };
 }
 
 type DeleteOutcome = "deleted" | "already-gone" | "skipped" | "failed";
@@ -290,17 +298,18 @@ async function runBulkDelete(channelId: string, messages: DmMessage[], removeFro
     return { deleted, gone, skipped, failed };
 }
 
-function reportRun(result: RunResult, hitLimit: boolean, maxMessages: number) {
+function reportRun(result: RunResult, hitLimit: boolean, maxMessages: number, truncated: boolean) {
     const parts = [`${result.deleted} message${result.deleted === 1 ? "" : "s"} deleted`];
 
     if (result.gone > 0) parts.push(`${result.gone} already gone`);
     if (result.skipped > 0) parts.push(`${result.skipped} skipped (Discord refuses to delete some system messages)`);
     if (result.failed > 0) parts.push(`${result.failed} failed`);
     if (hitLimit) parts.push(`stopped at the ${maxMessages} message limit, older messages were left`);
+    if (truncated) parts.push("this DM is too long to page through completely, some older messages may have been missed");
 
     showToast({
         text: parts.join(", "),
-        variant: result.failed > 0 ? "critical" : "success"
+        variant: result.failed > 0 || truncated ? "critical" : "success"
     });
 }
 
@@ -337,10 +346,11 @@ async function deleteAllInChannel(channelId: string, anchorId?: string) {
     const subtitleParts = [`This will permanently delete ${messages.length} of your messages.`];
     if (fetched.skipped > 0) subtitleParts.push(`${fetched.skipped} system message(s) cannot be deleted and will be skipped.`);
     if (fetched.hitLimit) subtitleParts.push(`Only the newest ${max} of your messages are included. Raise "maxMessages" in the plugin settings to include more.`);
+    if (fetched.truncated) subtitleParts.push("This DM is too long to page through completely, so some of your older messages may not be included.");
 
     const doDelete = async () => {
         const result = await runBulkDelete(channelId, messages, settings.store.removeFromView);
-        reportRun(result, fetched.hitLimit, max);
+        reportRun(result, fetched.hitLimit, max, fetched.truncated);
     };
 
     if (!settings.store.confirmBeforeDelete) {
