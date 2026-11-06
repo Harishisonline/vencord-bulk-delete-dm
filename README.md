@@ -3,11 +3,12 @@
 A Vencord plugin that bulk deletes **your own** messages inside DMs and group DMs.
 
 Discord has no bulk-delete for DMs. The official bulk endpoint
-(`POST /channels/{id}/messages/bulk-delete`) only works on guild channels and
-needs the `MANAGE_MESSAGES` permission, and bots cannot join 1:1 DMs at all.
-What does work is deleting a single message with
+(`POST /channels/{id}/messages/bulk-delete`) is bot-only and only works on
+guild channels with the `MANAGE_MESSAGES` permission, and bots cannot join
+1:1 DMs at all. What does work is deleting a single message with
 `DELETE /channels/{id}/messages/{message_id}`, so this plugin walks your DM
-history and deletes your messages one at a time.
+history and deletes your messages one at a time, paced to stay inside
+Discord's rate limit.
 
 ## What it does
 
@@ -18,6 +19,8 @@ history and deletes your messages one at a time.
 - Only ever deletes messages **authored by you**. Other people's messages are
   never touched.
 - Works in both 1:1 DMs and group DMs.
+- Shows a live progress window with a running count, the current speed, an
+  estimate of the time remaining, and a **Cancel** button.
 
 ## Install
 
@@ -63,23 +66,35 @@ BulkDeleteDm**.
 
 | Setting | Default | What it does |
 | --- | --- | --- |
-| `delayMs` | 1200 | Delay between delete requests. Raise it if you hit rate limits. |
-| `maxMessages` | 200 | Most messages to delete in one run. Raise it if a DM has more than this. |
-| `confirmBeforeDelete` | true | Ask before deleting. |
-| `removeFromView` | true | Remove deleted messages from the chat view. Turn it off if you use MessageLogger and want its red "deleted" markers. |
+| Maximum messages per run | 200 | How many of your messages to delete in one run. Set it to `0` for no limit, which walks the entire DM. |
+| Delete requests running at once | 2 | How many delete requests run in parallel. Two is the sweet spot. |
+| Ask for confirmation | on | Ask before deleting. |
+| Remove from view | on | Remove deleted messages from the chat view. Turn it off if you use MessageLogger and want its red "deleted" markers. |
+
+Each numeric setting has its own **Apply** button and shows the value that is
+currently saved underneath it, so you can always see what the plugin is
+actually using.
 
 ## Limits and behaviour worth knowing
 
-**There is a limit.** A single run deletes at most `maxMessages` (200 by
-default) messages. If a DM holds more of your messages than that, the plugin
-deletes the newest 200 and tells you it stopped at the limit. Raise
-`maxMessages` and run it again to clear the rest.
+**There is a limit.** A single run deletes at most the maximum you set (200 by
+default). If a DM holds more of your messages than that, the plugin deletes
+the newest ones and tells you it stopped at the limit. Set the maximum to `0`
+to walk the whole DM in one go.
+
+**How long it takes.** Deleting a message is one HTTP request, and Discord
+rate limits how fast they can be made. On a clean run the plugin manages
+about **2.3 deletions per second**. A DM with 3,000 of your messages in it
+therefore takes roughly **22 minutes**, and there is no way around that
+limit from a user plugin. Discord's own bulk delete endpoint, which would do
+100 messages per request, is restricted to bots and to guild channels.
 
 **Discord's own limits still apply.**
 
-- Deleting messages is rate limited. The plugin waits between requests and
-  backs off automatically when Discord returns `429`, but a very large cleanup
-  can still take a while at the default delay.
+- Deleting messages is rate limited. The plugin paces its requests evenly and
+  backs off automatically when Discord returns `429`. Pacing matters more than
+  parallelism here: firing requests in bursts makes Discord throttle the
+  account and the run ends up **slower**, not faster.
 - Messages older than 14 days can only be bulk deleted in **guild** channels.
   That rule does not apply here, because the plugin deletes messages
   individually, and it does work on old DM messages.
@@ -90,13 +105,12 @@ deletes the newest 200 and tells you it stopped at the limit. Raise
   reading a long DM takes several requests. The plugin pages backwards
   automatically, so this only affects speed, not results. Discord does not
   document a hard cap on how far back a DM's history goes, and in testing a
-  DM with over 12,000 messages still paged all the way back.
+  DM with over 60,000 messages still paged all the way back.
 
 **How far back a run reaches.** The plugin reads the DM newest-first and
-collects your messages until it has `maxMessages` of them, so one run always
-covers the **newest** messages in the DM. If a DM has more of your messages
-than the limit, run it again after raising `maxMessages` to reach further
-back.
+deletes your messages as it finds them, so one run always covers the
+**newest** messages in the DM. If a DM has more of your messages than the
+limit, raise the maximum and run it again to reach further back.
 
 **Deleted messages can linger in the chat view.** This is the single most
 common "it says it deleted them but I can still see them" report, and it is
@@ -117,10 +131,10 @@ logged this deletion", white means "this row was never reconciled locally".
 
 The plugin handles both cases:
 
-- `removeFromView: true` (default) removes each deleted message from the
-  local store outright, then clears and refetches the channel so the view
+- `Remove from view: on` (default) removes deleted messages from the
+  local store in batches, then clears and refetches the channel so the view
   matches the server exactly. No red rows, no stale rows.
-- `removeFromView: false` dispatches a plain delete event, which leaves
+- `Remove from view: off` dispatches a plain delete event, which leaves
   MessageLogger's red markers in place. Use this if you want MessageLogger's
   deletion log.
 
@@ -129,15 +143,23 @@ If the chat still looks stale after a run, reload the Discord window
 
 **Counts.** The toast after a run reports exactly what happened: how many were
 deleted, how many were skipped as undeletable system messages, how many
-failed, and whether the `maxMessages` limit was hit. A message counted as
-deleted was accepted by Discord's API and is gone from the server.
+failed, how long it took, the average speed, and whether the maximum was hit.
+A message counted as deleted was accepted by Discord's API and is gone from
+the server.
 
 ## Safety
 
 - The plugin only deletes messages where `author.id` is your own user ID.
 - It never deletes anyone else's messages.
 - Discord's "delete" is a hard delete. There is no undo and no trash folder.
-- The plugin shows a confirmation with the exact count before it runs.
+- The plugin shows a confirmation with the count before it runs.
+- You can cancel a run at any point from the progress window.
+
+## Changelog and development notes
+
+- [CHANGELOG.md](CHANGELOG.md) lists every change between releases.
+- [betterment.md](betterment.md) explains what was slow or broken, the
+  measurements behind each fix, and what is still on the list.
 
 ## Disclaimer
 
