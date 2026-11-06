@@ -243,8 +243,77 @@ delete all dm"**.
 
 ### What was wrong
 
-At the end of a run the plugin reconciled the view with the server by
-dispatching Discord's own `CLEAR_MESSAGES` action:
+Two separate bugs sat on top of each other here, and the first fix only
+removed the smaller one. Both were found by attaching a CDP
+`Runtime.exceptionThrown` listener and reading the actual stack, instead of
+guessing from the error message.
+
+#### Bug A: the channel reload looked up a module that does not exist
+
+The resync asked Discord to load the channel again using:
+
+```ts
+const { loadMessages } = findByProps("loadMessages");
+loadMessages(channelId);
+```
+
+`findByProps` **returns `null` when no module matches**, and this Discord
+build (0.0.421) has no module exporting a `loadMessages` prop. Destructuring
+`{ loadMessages }` out of `null` throws a `TypeError`, and the bare `catch {}`
+around it swallowed the error. The result: the channel's cache was cleared,
+the refetch never happened, and the channel sat there empty with no request
+in flight.
+
+The client log showed the lookup failing right before the crash:
+
+```
+Vencord Webpack  Error: webpack.findByProps found no module  Filter: loadMessages
+Uncaught (in promise) TypeError: c is not a function
+```
+
+#### Bug B: the progress modal was closed by calling a string
+
+This was the real one, and it was hiding the toast.
+
+`openModal()` in Discord's `ModalStore` returns a **string modal key**, not a
+close function. The plugin was doing this:
+
+```ts
+closeModal = openModal(modalProps => <ProgressModal ... />) as unknown as (() => void);
+// ...
+closeModal?.();
+```
+
+Calling a string is a `TypeError`. In the minified bundle it surfaces as
+`TypeError: c is not a function`, because the minifier had already turned
+the call into a generic invocation.
+
+The captured stack pinned the call site exactly:
+
+```
+Uncaught (in promise) TypeError: c is not a function
+    at d    (VencordRenderer:294:56211)   <- the plugin's onConfirm
+    at async (VencordRenderer:28:4924)    <- Discord's confirmAction
+    at async onClick (web.js:1:657075)
+```
+
+Line 294 of the built renderer is the plugin's `onConfirm` handler, and the
+crash landed on the `closeModal?.()` call. Because it threw inside Discord's
+confirm-dialog promise chain, **everything after it in the run never
+executed**:
+
+- the progress modal stayed on screen,
+- the result toast was never shown,
+- the channel appeared frozen with a modal nobody could dismiss.
+
+That is precisely the symptom the user reported, and it had nothing to do
+with the message deletion itself. The deletes were succeeding the whole
+time.
+
+#### How the first fix was wrong
+
+The earlier version of the resync dispatched Discord's own `CLEAR_MESSAGES`
+action:
 
 ```ts
 FluxDispatcher.dispatch({ type: "CLEAR_MESSAGES", channelId });
@@ -259,32 +328,63 @@ CLEAR_MESSAGES: function(e) {
 }
 ```
 
-In this Discord build (0.0.421) that handler throws. The client's own log
-shows it plainly, with the error arriving immediately after the clear:
+In this Discord build that handler throws too. The clear itself runs, so the
+channel's cached messages are dropped, but the error means the refetch that
+should follow never completes.
 
-```
-[MessageStore] Clearing messages for 1552233652539232320
-Uncaught (in promise) TypeError: c is not a function
-```
-
-The clear itself runs, so the channel's cached messages are dropped, but the
-error means the refetch that should follow never completes. The channel is
-left with an empty cache and no request in flight, which is exactly what
-"Discord is not loading anything" looks like.
+Replacing that with a direct store clear fixed the `CLEAR_MESSAGES` crash,
+but the `findByProps("loadMessages")` call then threw in its place, and the
+`closeModal?.()` bug was still hiding the toast. Three layers, one symptom.
 
 ### What changed
 
-The plugin no longer dispatches `CLEAR_MESSAGES` at all. It drops the
-channel's entry straight out of Discord's `ChannelMessages` store and asks
-Discord to load the channel again:
+The resync now clears the ChannelMessages store entry directly and asks
+Discord to load the channel again through Discord's own action creator, the
+same code path the client uses when you open a channel:
 
 ```ts
 const store = findByProps("_channelMessages");
 store?.clear?.(channelId);
+
+const creators = findByProps("jumpToPresent");
+creators?.fetchMessages?.({ channelId, limit: 50 });
 ```
 
-Verified live: the store's `clear(channelId)` drops the channel's cached
-messages with no error, and the channel reloads normally.
+The modal is closed with the key that `openModal` actually returned:
+
+```ts
+const key = openModal(props => <ProgressModal ... />);
+closeModal(key);
+```
+
+Both calls are wrapped so a failure is logged rather than thrown, and
+neither is allowed to prevent the result toast from being shown.
+
+### Verified
+
+Run against the live client with a CDP exception listener attached for the
+entire run:
+
+| Check | Result |
+| --- | --- |
+| Messages deleted | 15 of 15 |
+| Exceptions during the run | **0** |
+| Exceptions after the run | **0** |
+| Progress modal closed on completion | yes |
+| Result toast shown | `15 messages deleted, took 12s (1.3/s)` |
+| Channel store after the run | 1 entry, refetched from the API |
+| Channel API round trip | 369 ms |
+| Deleted messages still on the server | 0 |
+
+### The lesson
+
+The error message `TypeError: c is not a function` says nothing useful on
+its own in a minified bundle. The only thing that made this tractable was
+capturing the **stack**, which pointed at one specific line of one specific
+file, and then reading that line of the built renderer to see what it
+actually was. Two of the three causes were invisible from the error text
+alone, and both were on the path between "delete finished" and "tell the
+user it finished".
 
 ---
 
@@ -460,6 +560,17 @@ The number inputs are replaced with a custom settings component that:
 The slider for `delayMs` was removed entirely, since the fixed delay is
 gone. The old slider had another problem: `stickToMarkers: false` meant it
 stored values like `2398.911820170856` instead of a clean number.
+
+### Verified against the new build
+
+Tested in the real settings UI, not just in the code:
+
+| Action | Old build | New build |
+| --- | --- | --- |
+| Type `1.5` into the limit | store becomes `1.5`, field still shows `200` | rejected with a message, store untouched |
+| Type `1500`, press Apply | value saved, nothing confirms it | value saved, field shows **Saved** |
+| Read the stored value | not visible anywhere | shown as **Currently saved: 1500** |
+| Restart Discord | value persists | value persists |
 
 ### A second trap: the settings proxy hands back a new object every time
 

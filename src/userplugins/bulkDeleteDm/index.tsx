@@ -34,6 +34,7 @@ import {
     FluxDispatcher,
     Menu,
     Modal,
+    closeModal,
     openModal,
     RestAPI,
     showToast
@@ -867,6 +868,9 @@ async function runBulkDelete(options: RunOptions): Promise<RunResult> {
  * result, no error.
  */
 function resyncChannel(channelId: string) {
+    // Drop the channel's entry out of Discord's ChannelMessages store. This
+    // is the same thing Discord's own CLEAR_MESSAGES action does, minus the
+    // broken part.
     try {
         const store = findByProps("_channelMessages");
         store?.clear?.(channelId);
@@ -875,12 +879,23 @@ function resyncChannel(channelId: string) {
     }
 
     // Ask Discord to load the channel again so the view fills back in.
+    //
+    // This has to go through Discord's own MessageActionCreators.
+    // findByProps("loadMessages") finds nothing in this Discord build and
+    // returns null, so destructuring its result threw a TypeError and left
+    // the channel stuck, which is the "Discord stops loading after I use
+    // delete all dm" symptom.
     try {
-        const { loadMessages } = findByProps("loadMessages");
-        loadMessages(channelId);
-    } catch {
-        // Not every build exposes this, the store clear above is the part
-        // that matters.
+        const creators = findByProps("jumpToPresent");
+        creators?.fetchMessages?.({
+            channelId,
+            messages: [],
+            isBefore: false,
+            isAfter: false,
+            limit: 50
+        });
+    } catch (err) {
+        logger.warn("Could not trigger a channel reload", err);
     }
 }
 
@@ -912,7 +927,20 @@ async function deleteAllInChannel(channelId: string, anchorId?: string) {
     const removeFromView = settings.store.removeFromView;
 
     let cancelled = false;
-    let closeModal: (() => void) | undefined;
+    // openModal returns a string modal key, it is not a close function.
+    // closeModal takes that key.
+    let modalKey: string | undefined;
+
+    const closeProgressModal = () => {
+        if (modalKey === undefined) return;
+        const key = modalKey;
+        modalKey = undefined;
+        try {
+            closeModal(key);
+        } catch (err) {
+            logger.warn("Could not close the progress modal", err);
+        }
+    };
 
     const progress: ProgressState = {
         phase: "scanning",
@@ -934,7 +962,7 @@ async function deleteAllInChannel(channelId: string, anchorId?: string) {
 
         // A modal is shown for the whole run so the user can watch progress
         // and cancel. A toast cannot be updated in place.
-        closeModal = openModal(modalProps => (
+        modalKey = openModal(modalProps => (
             <ProgressModal
                 modalProps={modalProps}
                 tracker={tracker}
@@ -942,7 +970,7 @@ async function deleteAllInChannel(channelId: string, anchorId?: string) {
                     cancelled = true;
                 }}
             />
-        )) as unknown as (() => void);
+        ));
 
         let result: RunResult;
         try {
@@ -958,14 +986,14 @@ async function deleteAllInChannel(channelId: string, anchorId?: string) {
         } catch (err) {
             logger.error("Bulk delete failed", err);
             showToast({ text: "Could not load message history", variant: "critical" });
-            closeModal?.();
+            closeProgressModal();
             return;
         }
 
         // Reconcile the view with the server once the run is done.
         if (removeFromView) resyncChannel(channelId);
 
-        closeModal?.();
+        closeProgressModal();
         reportRun(result, maxMessages);
     };
 

@@ -8,6 +8,64 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 Nothing yet.
 
+## [2.1.0] - 2026-11-07
+
+The "Discord is not loading anything after I use delete all dm" bug, chased
+to its actual root cause with a full CDP exception stack trace instead of
+guessing.
+
+### Fixed
+
+- **The progress modal never closed, and the final result toast never
+  appeared.** This was the real cause of the channel appearing stuck.
+  - `openModal()` in Discord's `ModalStore` returns a **string modal key**,
+    not a close function. The plugin was doing
+    `closeModal = openModal(...)` and then calling `closeModal?.()`, which
+    is calling a string. In the minified bundle that surfaces as
+    `TypeError: c is not a function`.
+  - The throw happened inside the `onConfirm` promise chain of Discord's
+    confirm dialog, so it rejected the promise and the remaining statements
+    in the run never executed: the modal stayed on screen and the result
+    toast was never shown.
+  - The captured stack confirmed the call site exactly:
+
+    ```
+    Uncaught (in promise) TypeError: c is not a function
+        at d   (VencordRenderer:294:56211)   <- the plugin's onConfirm
+        at async (VencordRenderer:28:4924)   <- Discord's confirmAction
+        at async onClick (web.js:1:657075)
+    ```
+
+  - The plugin now keeps the returned key and closes it with Discord's
+    `closeModal(key)`, exactly as Discord's own modal callers do.
+- **The channel reload no longer throws.** The resync used
+  `findByProps("loadMessages")`, which finds **no module** in Discord
+  0.0.421 and returns `null`. Destructuring `{ loadMessages }` out of
+  `null` threw, and the catch block swallowed it, so the channel was
+  cleared but never refetched.
+  - The resync now clears the ChannelMessages store entry directly and
+    calls Discord's own `MessageActionCreators.fetchMessages`, which is
+    the same code path the client uses when you open a channel.
+- **The result toast now reports the truth.** With the modal closing
+  properly, the toast shows the deleted count, skipped count, failure
+  count, throttle count, elapsed time and the measured rate.
+
+### Verified
+
+Run against the live client with a full CDP exception listener attached,
+capturing every `Runtime.exceptionThrown` event for the whole run:
+
+| Check | Result |
+| --- | --- |
+| Messages deleted | 15 of 15 |
+| Exceptions during the run | **0** |
+| Exceptions after the run | **0** |
+| Progress modal closed on completion | yes |
+| Result toast shown | `15 messages deleted, took 12s (1.3/s)` |
+| Channel store after the run | 1 entry, refetched from the API |
+| Channel API round trip after the run | 369 ms |
+| Deleted messages still on the server | 0 |
+
 ## [2.0.0] - 2026-11-07
 
 The rewrite that came out of actually running the plugin against a DM with
@@ -59,11 +117,20 @@ measurement against the live Discord API, not by guesswork.
   field keeps displaying the old number and it looks like the edit was
   rejected. This was the cause of the "I can't save my settings and don't
   know if it was applied" complaint.
-  - Verified live: typing `1.5` into the old field left the store at `1.5`
-    while the field still displayed `200`.
+  - Verified live against the old build: typing `1.5` into the old field
+    left the store at `1.5` while the field still displayed `200`.
   - The replacement keeps its own draft state, only commits whole numbers,
   - shows a red validation message for bad input, and
   - shows the stored value underneath so the applied value is always visible.
+
+  Verified live against the new build, in the real settings UI:
+
+  | Action | Old build | New build |
+  | --- | --- | --- |
+  | Type `1.5` | store becomes `1.5`, field still shows `200` | rejected with a message, store untouched |
+  | Type `1500`, press Apply | value saved, no confirmation shown | value saved, field shows **Saved** |
+  | Read the stored value | not visible anywhere | shown as **Currently saved: 1500** |
+  | After a restart | value persists | value persists |
 - **Local message removal is now batched.** The old plugin dispatched one
   `MESSAGE_DELETE` Flux event per message, which makes React re-render the
   message list once per message. That is what made the client crawl during
@@ -149,6 +216,7 @@ First public release.
 - The `maxMessages` limit silently truncates the run.
 - Deleting 1,000 messages takes over 20 minutes.
 
-[Unreleased]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/Harishisonline/vencord-bulk-delete-dm/compare/v1.0.0...v2.0.0
 [1.0.0]: https://github.com/Harishisonline/vencord-bulk-delete-dm/releases/tag/v1.0.0
