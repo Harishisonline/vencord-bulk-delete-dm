@@ -12,7 +12,46 @@ Nothing yet.
 
 The "Discord is not loading anything after I use delete all dm" bug, chased
 to its actual root cause with a full CDP exception stack trace instead of
-guessing.
+guessing. Also the scheduler fix that only showed up on a long run.
+
+### Fixed
+
+- **The scheduler walked itself into the rate limit after about 23 minutes.**
+  This was the real reason a long run got slower and started throwing away
+  requests. The scheduler had a rule to tighten the spacing by 100ms after
+  every 40 clean requests, on the theory that an idle bucket refills faster.
+  Discord's refill rate is fixed and waiting earns no credit, so the run
+  was slowly walking itself back into the limit it had already learned.
+  - Each step down needed 40 clean requests, so it took 680 clean requests,
+    roughly 23 minutes at 0.5 deletions per second, before the first
+    symptom. That is why short tests never caught it.
+  - The spacing now only ever widens, and only when Discord says to. A
+    clean request changes nothing.
+  - Every throttle widens the spacing by a step that grows with the
+    throttle count, not just the first one.
+- **Two workers were taking half the tokens from each other.** The delete
+  rate limit is one account-wide bucket, so a second worker does not add
+  throughput. Each worker reserved its own slot and they fired one spacing
+  apart, which is half the refill interval, so one of every pair was
+  refused. Measured gaps were 103ms and 1898ms alternating, and Discord
+  refused 38 of every 75 requests.
+  - The default worker count is now **1**.
+  - Slots reserved before a 429 arrived are given back, so the pause
+    applies to every worker instead of only the ones that happened to
+    reserve after it.
+
+### Measured, before and after
+
+Same plugin, same DM, same message pool:
+
+| | Before | After |
+| --- | --- | --- |
+| Throttles in the first 2 minutes | 325 | **1** |
+| Speed | 0.2/s | **0.7/s** |
+| Requests refused | two thirds | one |
+| Throttle count after 5 minutes | climbing | still 1 |
+
+### The rest of this release
 
 ### Fixed
 

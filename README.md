@@ -67,7 +67,7 @@ BulkDeleteDm**.
 | Setting | Default | What it does |
 | --- | --- | --- |
 | Maximum messages per run | 200 | How many of your messages to delete in one run. Set it to `0` for no limit, which walks the entire DM. |
-| Delete requests running at once | 2 | How many delete requests run in parallel. Two is the sweet spot. |
+| Delete requests running at once | 1 | How many delete requests run in parallel. Leave this at 1. Discord's delete rate limit is one account-wide bucket, so a second worker does not make the run faster, it just takes half the tokens the first worker would have used and gets half the requests refused. |
 | Ask for confirmation | on | Ask before deleting. |
 | Remove from view | on | Remove deleted messages from the chat view. Turn it off if you use MessageLogger and want its red "deleted" markers. |
 
@@ -84,12 +84,11 @@ to walk the whole DM in one go.
 
 **How long it takes.** Deleting a message is one HTTP request, and Discord
 rate limits how fast they can be made. The sustained rate, measured against
-the live API over runs of 150 to 300 messages, is about **0.6 to 0.7 deletions
-per second** once the initial burst allowance is spent. A DM with 3,000 of
-your messages in it therefore takes roughly **75 minutes**, and there is no
-way around that limit from a user plugin. Discord's own bulk delete endpoint,
-which would do 100 messages per request, is restricted to bots and to guild
-channels.
+the live API over long runs, is about **0.6 to 0.7 deletions per second**.
+A DM with 3,000 of your messages in it therefore takes roughly **75 minutes**,
+and there is no way around that limit from a user plugin. Discord's own bulk
+delete endpoint, which would do 100 messages per request, is restricted to
+bots and to guild channels.
 
 The first handful of messages in a run go faster than that, because Discord
 allows a short burst before the limit starts biting. The burst is real but

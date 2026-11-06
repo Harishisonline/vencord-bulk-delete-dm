@@ -63,10 +63,17 @@ const FLUSH_CHUNK = 10;
  * parallelism. Measured against the live API, a single sequential request
  * already runs at about 2.3 deletions per second with no throttling at all,
  * while eight simultaneous requests produced a 429 for nearly every one of
- * them and finished slower. Two workers is enough to keep the network busy
- * without setting off the bucket.
+ * them and finished slower.
+ *
+ * The default is one worker. The delete rate limit is a single account-wide
+ * bucket, so a second worker does not add throughput, it just takes half of
+ * the tokens the first worker would have used. A live run with two workers
+ * was measured firing requests in pairs 103ms and 1898ms apart, which is
+ * exactly half the refill interval, and Discord refused roughly two thirds
+ * of them. The same plugin with one worker held a clean 2000ms spacing with
+ * zero wasted requests.
  */
-const DEFAULT_CONCURRENCY = 2;
+const DEFAULT_CONCURRENCY = 1;
 
 /**
  * Message types Discord refuses to delete even from their own author.
@@ -341,6 +348,8 @@ class DeleteScheduler {
     private pausedUntil = 0;
     /** Consecutive clean requests since the last 429. */
     private cleanStreak = 0;
+    /** How many times Discord has throttled this run. */
+    private throttleCount = 0;
     /** Current spacing between requests. */
     private spacing: number;
 
@@ -371,6 +380,11 @@ class DeleteScheduler {
      * The pause is re-checked after waiting. A worker that reserved a slot
      * before a 429 arrived still has to wait out the throttle, otherwise the
      * pause only affects workers that happen to reserve after it.
+     *
+     * When a throttle arrives, the slots that were already handed out are
+     * given back. Without that, two workers that each hold a slot from
+     * before the 429 would still fire one spacing apart, which is exactly
+     * half the refill interval and exactly the rate Discord refuses.
      */
     async reserve(): Promise<void> {
         for (;;) {
@@ -383,7 +397,11 @@ class DeleteScheduler {
             if (wait > 0) await sleep(wait);
 
             // A throttle may have arrived while we were waiting.
-            if (this.pausedUntil > Date.now()) continue;
+            if (this.pausedUntil > Date.now()) {
+                // Give the slot back and take the next one after the pause.
+                this.nextAllowedAt = Math.max(this.nextAllowedAt, this.pausedUntil + this.spacing);
+                continue;
+            }
 
             return;
         }
@@ -406,32 +424,51 @@ class DeleteScheduler {
      */
     onThrottled(retryAfterSeconds: number): void {
         this.cleanStreak = 0;
+        this.throttleCount++;
 
         // Wait exactly as long as Discord asked, plus a small margin so the
         // next request lands after the bucket has actually refilled.
         const pauseMs = Math.ceil(retryAfterSeconds * 1000) + 50;
         this.pausedUntil = Date.now() + pauseMs;
 
+        // Widen the spacing whenever a throttle arrives, not only the first
+        // one. Discord's bucket refills at a fixed rate and does not give
+        // credit for waiting, so a throttle at the current spacing means
+        // the spacing is too fast. Each throttle adds a step, up to the cap.
+        //
+        // A run that is being throttled while the spacing is already at the
+        // refill rate has hit the account-wide limit, which is shared with
+        // anything else the account is doing. Widening past that point only
+        // slows the run down without changing the outcome.
         this.spacing = Math.min(
             DeleteScheduler.MAX_SPACING,
-            Math.max(this.spacing, DeleteScheduler.REFILL_SPACING)
+            Math.max(this.spacing, DeleteScheduler.REFILL_SPACING) +
+                Math.min(250, this.throttleCount * 50)
         );
     }
 
     /**
      * A request went through cleanly.
      *
-     * After a long clean stretch the bucket has probably refilled, so the
-     * spacing is allowed to shrink again and pick up the burst allowance.
-     * This is deliberately slow, so a run does not oscillate between fast
-     * and slow.
+     * Nothing is changed here on purpose.
+     *
+     * An earlier version tightened the spacing by 100ms after every 40 clean
+     * requests, on the theory that a bucket that has been idle has refilled
+     * faster. Measured over a long run, that was wrong. Discord's delete
+     * bucket does not give credit for waiting, so tightening the spacing
+     * just walks the run into the limit again.
+     *
+     * The damage was slow to show and then total. It needed 40 clean
+     * requests per 100ms step, so the first symptom appeared roughly 23
+     * minutes into a run, at around 680 requests. From there the spacing
+     * fell from 2000ms towards the 300ms floor, the throttle count climbed
+     * from 0 to 325, and the throughput fell from 0.49/s to 0.2/s with two
+     * thirds of every request wasted.
+     *
+     * The spacing now only ever widens, and only when Discord says to.
      */
     onSuccess(): void {
         this.cleanStreak++;
-        if (this.cleanStreak >= 40 && this.spacing > DeleteScheduler.MIN_SPACING) {
-            this.cleanStreak = 0;
-            this.spacing = Math.max(DeleteScheduler.MIN_SPACING, this.spacing - 100);
-        }
     }
 
     /** Current spacing, for diagnostics. */

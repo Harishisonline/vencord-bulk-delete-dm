@@ -645,6 +645,94 @@ that reads as "it deleted some and gave up".
 
 ---
 
+## 11. The scheduler walked itself into the limit after 23 minutes
+
+This is the most important bug found in the whole exercise, and it was
+invisible until a run went long enough to hit it.
+
+### What was wrong
+
+The scheduler had a rule to tighten the spacing after a long clean streak:
+
+```ts
+onSuccess(): void {
+    this.cleanStreak++;
+    if (this.cleanStreak >= 40 && this.spacing > MIN_SPACING) {
+        this.cleanStreak = 0;
+        this.spacing = Math.max(MIN_SPACING, this.spacing - 100);
+    }
+}
+```
+
+The idea was that an idle bucket refills faster, so a run that had been
+going well for a while could pick up the burst allowance again.
+
+That is not how Discord's bucket works. The refill rate is fixed, and
+waiting does not earn extra credit. Tightening the spacing just walks the
+run back into the limit it had already learned.
+
+### Why it took so long to show
+
+Each step down was 100ms and needed 40 clean requests to earn it. From the
+2000ms refill spacing down to the 300ms floor is 17 steps, so 680 clean
+requests, which at 0.5 per second is about **23 minutes**.
+
+The live run confirmed the timing exactly:
+
+| Elapsed | Deleted | Speed | Throttles |
+| --- | --- | --- | --- |
+| 3 min | 59 | 0.5/s | 4 |
+| 5 min | 82 | 0.5/s | 8 |
+| 20 min | 358 | 0.3/s | 161 |
+| 25 min | 416 | 0.2/s | 325 |
+
+The throttle count was flat for the first several minutes and then started
+climbing on its own. Nothing else was running.
+
+### The second half of the bug: two workers, one bucket
+
+The default was two concurrent workers. Each worker reserved its own slot
+from the shared scheduler, so they fired **one spacing apart from each
+other**, which is half the refill interval:
+
+```
+gaps: 103, 1898, 105, 1895, 103, 1897, 104, 1896 ...
+```
+
+That is two requests per 2000ms window, so one of each pair was always
+going to be refused. Discord refused 38 of every 75 attempts.
+
+A worker that had already reserved a slot when a 429 arrived also kept that
+slot, so the pause only applied to workers that happened to reserve after
+it. The slots handed out before the throttle are now given back.
+
+### What changed
+
+- **The spacing only ever widens now, and only when Discord says to.** A
+  clean request changes nothing. There is no shrink path.
+- **Every throttle widens the spacing**, not just the first one, by a step
+  that grows with the throttle count, up to a cap.
+- **The default worker count is 1.** The delete limit is one account-wide
+  bucket. A second worker does not add throughput, it takes half the tokens
+  the first worker would have used.
+- **Slots reserved before a 429 are returned**, so the pause applies to
+  every worker.
+
+### Verified
+
+The same plugin, the same DM, the same message pool, after the fix:
+
+| | Before | After |
+| --- | --- | --- |
+| Throttles in the first 2 minutes | 325 | **1** |
+| Speed | 0.2/s | **0.7/s** |
+| Requests refused | two thirds | one |
+
+The run went from 416 deleted in 29 minutes to a steady 0.7/s with the
+throttle count barely moving.
+
+---
+
 ## Still to work on
 
 Ordered by how much they matter.
@@ -730,7 +818,7 @@ whether a run is active.
 future version binary-search for older pages instead of walking every one.
 Not implemented.
 
-### 3. The rate limit bucket is per account, so two runs halve each other
+### 4. The rate limit bucket is per account, so two runs halve each other
 
 This one only showed up because the plugin was being measured at the same
 time as the measurement itself.
@@ -792,7 +880,7 @@ a lot to clear, and it makes both runs slower.
 
 ---
 
-### 3. The rate limit bucket is per account, not per channel
+### 5. The rate limit bucket is per account, not per channel
 
 The request log shows Discord tracking a rate limit entry per message URL,
 and the 429 responses carry `x-ratelimit-scope: user`. This means running
@@ -805,27 +893,27 @@ is per account, so two runs halve each other" above for the trace: two runs
 against one account produced 164 throttles and a 0.2/s rate, while the same
 plugin alone produced zero throttles at a dead-even 0.49/s.
 
-### 4. The `maxMessages` limit stops the walk, it does not skip ahead
+### 6. The `maxMessages` limit stops the walk, it does not skip ahead
 
 When the limit is hit, the plugin stops at the newest N messages. It does
 not continue walking to find older ones. That is intentional, since the
 point of the limit is to bound the work, but a "skip to the next 200 older
 messages" mode would be useful for a user clearing a DM in stages.
 
-### 5. No resume support
+### 7. No resume support
 
 If a run is cancelled, there is no way to pick up where it left off other
 than running again, which re-walks the history from the top. The deleted
 messages are gone from the server, so the re-walk finds fewer of them, but
 the paging work is repeated.
 
-### 6. Group DMs behave the same as 1:1 DMs
+### 8. Group DMs behave the same as 1:1 DMs
 
 Both are handled by the same code path and both use individual message
 deletes. There is no group-specific handling, and no need for it, but the
 group case has not been tested at the same scale as the 1:1 case.
 
-### 7. MessageLogger interaction is only handled for the common case
+### 9. MessageLogger interaction is only handled for the common case
 
 `MESSAGE_DELETE_BULK` with `mlDeleted: true` makes MessageLogger remove
 the messages outright. The `removeFromView: false` path, which keeps
