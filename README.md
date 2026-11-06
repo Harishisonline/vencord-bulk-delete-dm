@@ -83,18 +83,28 @@ the newest ones and tells you it stopped at the limit. Set the maximum to `0`
 to walk the whole DM in one go.
 
 **How long it takes.** Deleting a message is one HTTP request, and Discord
-rate limits how fast they can be made. On a clean run the plugin manages
-about **2.3 deletions per second**. A DM with 3,000 of your messages in it
-therefore takes roughly **22 minutes**, and there is no way around that
-limit from a user plugin. Discord's own bulk delete endpoint, which would do
-100 messages per request, is restricted to bots and to guild channels.
+rate limits how fast they can be made. The sustained rate, measured against
+the live API over runs of 150 to 300 messages, is about **0.6 to 0.7 deletions
+per second** once the initial burst allowance is spent. A DM with 3,000 of
+your messages in it therefore takes roughly **75 minutes**, and there is no
+way around that limit from a user plugin. Discord's own bulk delete endpoint,
+which would do 100 messages per request, is restricted to bots and to guild
+channels.
+
+The first handful of messages in a run go faster than that, because Discord
+allows a short burst before the limit starts biting. The burst is real but
+small, roughly 15 to 20 messages, and it does not change the total.
 
 **Discord's own limits still apply.**
 
-- Deleting messages is rate limited. The plugin paces its requests evenly and
-  backs off automatically when Discord returns `429`. Pacing matters more than
-  parallelism here: firing requests in bursts makes Discord throttle the
-  account and the run ends up **slower**, not faster.
+- Deleting messages is rate limited. Discord does not send rate limit headers
+  on successful deletes, so the plugin has to infer the limit from the `429`
+  responses. It paces its requests evenly and pauses for exactly as long as
+  Discord asks when it gets one. Pacing matters more than parallelism here:
+  firing requests in bursts makes Discord throttle the account and the run
+  ends up **slower**, not faster. Measured: 8 parallel requests produced a
+  `429` for nearly every one of them and finished slower than a single
+  sequential worker.
 - Messages older than 14 days can only be bulk deleted in **guild** channels.
   That rule does not apply here, because the plugin deletes messages
   individually, and it does work on old DM messages.
@@ -138,8 +148,15 @@ The plugin handles both cases:
   MessageLogger's red markers in place. Use this if you want MessageLogger's
   deletion log.
 
-If the chat still looks stale after a run, reload the Discord window
-(`Cmd+R` / `Ctrl+R`) to force a refetch.
+After a run the plugin clears the channel's cached messages and asks Discord
+to load the channel again, so the view should end up matching the server. If
+the chat still looks stale, reload the Discord window (`Cmd+R` / `Ctrl+R`) to
+force a refetch.
+
+**If the progress window will not go away.** A stuck progress window means the
+run threw before it could close itself. Reload the Discord window (`Cmd+R` /
+`Ctrl+R`). The deleted messages are gone from the server either way, so
+reloading only fixes the display.
 
 **Counts.** The toast after a run reports exactly what happened: how many were
 deleted, how many were skipped as undeletable system messages, how many
