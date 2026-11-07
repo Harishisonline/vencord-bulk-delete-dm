@@ -47,6 +47,39 @@ Same plugin, same DM, same message pool:
 | Requests refused | two thirds | one |
 | Throttle count after 11 minutes | climbing | still 1 |
 | Throttle count after 31 minutes | climbing | still 1 |
+| Throttle count after 64 minutes | climbing | still 1 |
+
+### The full AEGIS DM was cleared
+
+The 1:1 DM with `astralthesis` (channel `1402318446934360155`) held **6,161
+messages, 3,135 of them the user's**. It was cleared end to end with the
+shipped plugin:
+
+| | Before | After |
+| --- | --- | --- |
+| Total messages | 6,161 | 3,026 |
+| The user's messages | 3,135 | **0** |
+| The other person's messages | 3,026 | 3,026 (untouched) |
+| Last run | - | 1,900 deleted, 1 throttle, 64m 3s, 0.5/s |
+
+Verified by walking every page of the API after the run: 31 pages, 3,026
+messages, **zero of them the user's**, and every one of the other person's
+messages still there.
+
+### The channel stayed healthy
+
+The "Discord is not loading anything" symptom did not come back. The
+progress window closed, the result toast appeared with the real counts, the
+API round trip was 387 ms, and navigating away and back refetched the
+channel normally.
+
+One note for anyone checking this by hand: the AEGIS DM renders as a set of
+collapsed **"N blocked messages"** placeholders rather than individual
+message rows, because the user has the other person blocked. That is
+Discord's own rendering for blocked users, not a plugin problem. The
+placeholder counts add up to exactly the number of messages in the store
+(43 + 17 + 3 + 4 + 10 + 3 = 80, and the store held 80), which is how it was
+confirmed.
 
 ## [2.1.0] - 2026-11-07
 

@@ -747,6 +747,92 @@ point.
 
 ---
 
+## 12. The AEGIS DM was cleared end to end
+
+The test case from the top of this document, run for real with the shipped
+plugin.
+
+### The starting point
+
+| Property | Value |
+| --- | --- |
+| Channel | `1402318446934360155`, a 1:1 DM with `astralthesis` |
+| Total messages | 6,161 |
+| The user's messages | 3,135 |
+| The other person's messages | 3,026 |
+| Oldest message | 2025-08-05 |
+| Newest message | 2026-10-18 |
+| Pages to walk | 62 |
+
+### What happened
+
+The plugin was set to `maxMessages: 0` (no limit) and `concurrency: 1`, and
+run through the sidebar context menu on the real DM, with the real UI
+clicked by a mouse event rather than by calling the handler directly.
+
+The first attempt used the old build and produced 325 throttles in 29
+minutes at 0.2/s, which is what exposed the scheduler bug in section 11.
+After that fix, the run was repeated from scratch.
+
+| | Result |
+| --- | --- |
+| Last run | **1,900 deleted, 1 throttle, 64m 3s, 0.5/s** |
+| Throttle count across 64 minutes | 1, and it never went up |
+| Exceptions during the run | 0 (the only one was Discord's own Sentry notice) |
+| Progress window | closed on completion |
+| Result toast | `1900 messages deleted, throttled 1 times, took 64m 3s (0.5/s)` |
+
+### The verification
+
+The API was walked end to end after the run, all 31 pages of what was left:
+
+```json
+{
+  "pages": 31,
+  "total": 3026,
+  "mine": 0,
+  "others": 3026,
+  "mineIds": []
+}
+```
+
+Every one of the user's own messages is gone. Every one of the other
+person's messages is still there.
+
+### The channel stayed healthy
+
+| Check | Result |
+| --- | --- |
+| API round trip after the run | 387 ms |
+| Channel store after the run | refetched from the API |
+| Navigate away and back | works |
+| Progress window | closed |
+| Result toast | shown, with the real counts |
+
+### One thing that looks like a bug but is not
+
+The AEGIS DM renders as a set of collapsed **"N blocked messages"**
+placeholders instead of individual message rows, so a script that counts
+`[id^="chat-messages-"]` elements finds zero of them.
+
+That is Discord's own rendering for a user you have blocked. The
+placeholder counts add up to exactly the number of messages in the store:
+
+```
+43 + 17 + 3 + 4 + 10 + 3 = 80 blocked, and the store held 80
+```
+
+The same thing was observed on a second, untouched DM with a blocked
+participant, with 30 messages in the store and zero rows rendered. So it
+is Discord, not the plugin.
+
+**Lesson:** when checking whether a plugin left the client in a working
+state, count the messages in the store and compare against the API, not
+the number of DOM rows. Discord renders some messages in ways that never
+produce a `chat-messages-*` element.
+
+---
+
 ## Still to work on
 
 Ordered by how much they matter.
