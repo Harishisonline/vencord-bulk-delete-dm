@@ -75,6 +75,21 @@ limit is one bucket for your whole account, so a second worker does not
 make the run faster, it just splits the same tokens and gets half of its
 requests refused.
 
+## Installing both DM plugins together
+
+There is a combined installer that puts this plugin and
+[FloodDM](https://github.com/Harishisonline/vencord-flood-dm) into the same
+Vencord bundle in one build, so neither one removes the other:
+
+```bash
+git clone https://github.com/Harishisonline/vencord-dm-plugins.git
+cd vencord-dm-plugins
+./install.sh
+```
+
+All three installers share one Vencord checkout, so they compose. Installing
+one plugin does not remove the other, and the order does not matter.
+
 ### Option 2: manual
 
 1. Clone and build Vencord following the
